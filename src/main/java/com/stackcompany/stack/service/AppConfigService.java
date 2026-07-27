@@ -21,7 +21,7 @@ public class AppConfigService {
         seed("bot_enabled",          "true",                         "Enable/disable the news bot");
         seed("bot_articles_per_day", "2",                            "Max posts per scheduled run");
         seed("bot_cron",             "0 0 8 * * *",                  "Cron expression (Africa/Luanda)");
-        seed("bot_account_email",    "cisi.dg@ucan.edu",             "Bot author email");
+        seed("bot_account_email",    "cisi.dg@ucan.edu",             "Bot author email(s), comma separated");
         seed("bot_post_prefix",      "",                             "Prefix prepended to every bot post");
         seed("openrouter_api_key",   "",                             "OpenRouter API key");
         seed("openrouter_model",     "google/gemini-2.5-flash-lite", "OpenRouter model ID");

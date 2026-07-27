@@ -43,18 +43,29 @@ public class NewsScraperScheduler {
         if (!enabled) { log.info("News bot is disabled."); return; }
 
         int articlesPerDay   = appConfig.getInt("bot_articles_per_day", 2);
-        String botEmail      = appConfig.get("bot_account_email", "cisi.dg@ucan.edu");
+        String botEmails     = appConfig.get("bot_account_email", "cisi.dg@ucan.edu");
 
         log.info("Starting scheduled news scraping (max {} posts)...", articlesPerDay);
 
         try {
-            Optional<User> botOpt = userRepository.findByEmail(botEmail);
-            if (botOpt.isEmpty()) botOpt = userRepository.findFirstByRule("ADMIN");
-            if (botOpt.isEmpty()) { log.error("No bot or ADMIN user found."); return; }
-            User botUser = botOpt.get();
+            List<User> botUsers = resolveBotAuthors(botEmails);
+            if (botUsers.isEmpty()) {
+                Optional<User> fallback = userRepository.findFirstByRule("ADMIN");
+                if (fallback.isEmpty()) { log.error("No bot or ADMIN user found."); return; }
+                botUsers = new ArrayList<>(List.of(fallback.get()));
+                log.warn("No configured bot account matched a user; falling back to ADMIN '{}'.",
+                        fallback.get().getEmail());
+            }
+            User botUser = botUsers.get(0);
 
-            List<User> admins = new ArrayList<>(userRepository.findAllByRule("ADMIN"));
-            admins.removeIf(u -> u.getId().equals(botUser.getId()));
+            // Legacy fill-in: only when a single author is configured do we spread the
+            // remaining posts across other admins. With an explicit multi-account list
+            // we rotate strictly within that list instead.
+            List<User> admins = new ArrayList<>();
+            if (botUsers.size() == 1) {
+                admins.addAll(userRepository.findAllByRule("ADMIN"));
+                admins.removeIf(u -> u.getId().equals(botUser.getId()));
+            }
 
             // ── Scrape all enabled sources ──────────────────────────────────────
             List<NewsArticle> articles = new ArrayList<>();
@@ -113,7 +124,12 @@ public class NewsScraperScheduler {
             int posted = 0;
             for (int i = 0; i < fresh.size() && posted < articlesPerDay; i++) {
                 NewsArticle article = fresh.get(i);
-                User author = (i == 0) ? botUser : (admins.isEmpty() ? botUser : admins.get(i % admins.size()));
+                User author;
+                if (botUsers.size() > 1) {
+                    author = botUsers.get(posted % botUsers.size());
+                } else {
+                    author = (i == 0) ? botUser : (admins.isEmpty() ? botUser : admins.get(i % admins.size()));
+                }
                 try {
                     // For Expansão: try to fetch full article text
                     if ("Expansão Angola".equals(article.getSourceName()) && article.getSourceUrl() != null) {
@@ -138,6 +154,36 @@ public class NewsScraperScheduler {
         } catch (Exception e) {
             log.error("Scraping task failed: {}", e.getMessage(), e);
         }
+    }
+
+    /**
+     * Resolves the configured bot author(s). Accepts a single email or a comma/semicolon
+     * separated list, so several accounts can take turns publishing. Unknown emails are
+     * skipped with a warning rather than aborting the run.
+     */
+    private List<User> resolveBotAuthors(String configured) {
+        List<User> authors = new ArrayList<>();
+        if (configured == null || configured.isBlank()) return authors;
+
+        for (String raw : configured.split("[,;]")) {
+            String email = raw.trim();
+            if (email.isEmpty()) continue;
+
+            Optional<User> found = userRepository.findByEmail(email);
+            if (found.isEmpty()) {
+                log.warn("Bot account '{}' not found in the database — skipping.", email);
+                continue;
+            }
+            User user = found.get();
+            boolean duplicate = authors.stream().anyMatch(u -> u.getId().equals(user.getId()));
+            if (!duplicate) authors.add(user);
+        }
+
+        if (!authors.isEmpty()) {
+            log.info("Bot will publish as {} account(s): {}", authors.size(),
+                    authors.stream().map(User::getEmail).toList());
+        }
+        return authors;
     }
 
     @Transactional
