@@ -176,13 +176,14 @@ public class NewsScraperScheduler {
     // keeps the source URL and post id) and replaces the post text with the full article, a few
     // posts per run so the sources and the AI are not flooded. Votes, comments, views and the
     // image stay. Posts already long enough, or edited so they no longer end with a "Fonte:" line,
-    // are left alone; it stops by itself once nothing is left. Off with scraper.upgrade-short-posts=false.
+    // are left alone; it stops by itself once nothing is left. OFF by default (owner: only new posts are
+    // written in full, old posts stay as they are); scraper.upgrade-short-posts=true turns it on.
 
     private static final int FULL_POST_CHARS = 1500;
     private static final int UPGRADES_PER_RUN = 5;
     private final java.util.Set<Long> upgradeSkipped = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
-    @org.springframework.beans.factory.annotation.Value("${scraper.upgrade-short-posts:true}")
+    @org.springframework.beans.factory.annotation.Value("${scraper.upgrade-short-posts:false}")
     private boolean upgradeShortPosts;
 
     @Scheduled(initialDelayString = "${scraper.upgrade.initial-delay-ms:120000}", fixedDelayString = "${scraper.upgrade.delay-ms:300000}")
