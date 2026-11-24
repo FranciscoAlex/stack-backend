@@ -83,8 +83,11 @@ public class TelegramaScraperService {
             Element ogImg = doc.selectFirst("meta[property='og:image']");
             if (ogImg != null) imageUrl = ogImg.attr("content");
 
-            Elements paragraphs = doc.select(
-                    "div.elementor-widget-text-editor p, div.elementor-text-editor p");
+            // O Telegrama's article body is in Elementor's post-content widget (layout as of
+            // 2026-11); the older text-editor widget and generic containers stay as fallbacks.
+            Elements paragraphs = doc.select("div.elementor-widget-theme-post-content p");
+            if (paragraphs.isEmpty())
+                paragraphs = doc.select("div.elementor-widget-text-editor p, div.elementor-text-editor p");
             if (paragraphs.isEmpty())
                 paragraphs = doc.select("article p, main p, .entry-content p");
 
