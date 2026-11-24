@@ -34,8 +34,13 @@ public class AppConfigController {
         return ResponseEntity.ok().build();
     }
 
+    // Secret settings (API keys, passwords, tokens) are never public. Before, any key could be
+    // read here, including openrouter_api_key.
+    private static final java.util.regex.Pattern SECRET_KEY = java.util.regex.Pattern.compile("(?i)(key|secret|password|passwd|token|credential)");
+
     @GetMapping("/api/config/public/{key}")
     public ResponseEntity<Map<String, String>> getPublic(@PathVariable String key) {
+        if (SECRET_KEY.matcher(key).find()) return ResponseEntity.notFound().build();
         String value = appConfigService.get(key, "");
         return ResponseEntity.ok(Map.of("key", key, "value", value));
     }

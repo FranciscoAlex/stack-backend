@@ -15,6 +15,7 @@ import java.util.Map;
 
 @Service
 @Slf4j
+@lombok.RequiredArgsConstructor
 public class OpenRouterService {
 
     private static final String API_URL       = "https://openrouter.ai/api/v1/chat/completions";
@@ -25,6 +26,12 @@ public class OpenRouterService {
 
     @Value("${openrouter.model:google/gemini-2.5-flash-lite}")
     private String model;
+
+    // The key can also be set by an admin in the app settings ("openrouter_api_key"); production
+    // only has it there, so without this fallback the AI never ran and every news post was the
+    // 300-character fallback excerpt.
+    private final AppConfigService appConfig;
+    private volatile String loggedKeySource = null;
 
     private final RestTemplate  restTemplate = new RestTemplate();
     private final ObjectMapper  objectMapper = new ObjectMapper();
@@ -66,7 +73,7 @@ public class OpenRouterService {
             """.formatted(title, source);
         for (int attempt = 1; attempt <= 2; attempt++) {
             try {
-                String resp = call(prompt, apiKey, model, 2600, 0.4);
+                String resp = call(prompt, effectiveKey(), model, 2600, 0.4);
                 if (resp == null) continue;
                 String text = resp.trim().replaceAll("(?s)^```(?:\\w+)?\\s*", "").replaceAll("(?s)\\s*```$", "").trim();
                 // A full article: at least 1 200 characters, or half of a short original.
@@ -103,7 +110,7 @@ public class OpenRouterService {
 
                 Responde apenas com o texto do post, sem explicações adicionais.
                 """.formatted(title, body);
-            String resp = call(prompt, apiKey, model, 500, 0.7);
+            String resp = call(prompt, effectiveKey(), model, 500, 0.7);
             return resp != null && !resp.isBlank() ? resp.trim() : formatDefault(title, body);
         } catch (Exception e) {
             log.error("summarizeForPost failed: {}", e.getMessage());
@@ -123,7 +130,7 @@ public class OpenRouterService {
                 prompt.append("Notícia ").append(i).append(":\nTítulo: ").append(a.getTitle())
                       .append("\nResumo: ").append(bodySnippet).append("\n\n");
             }
-            String resp = call(prompt.toString(), apiKey, model, 10, 0.1);
+            String resp = call(prompt.toString(), effectiveKey(), model, 10, 0.1);
             if (resp != null) {
                 String num = resp.replaceAll("[^0-9]", "");
                 if (!num.isEmpty()) {
@@ -138,7 +145,7 @@ public class OpenRouterService {
     }
 
     public String analyzePageSelectors(String html, String pageUrl, String keyOverride, String modelOverride) {
-        String effectiveKey   = (keyOverride != null && !keyOverride.isBlank())   ? keyOverride   : apiKey;
+        String effectiveKey   = (keyOverride != null && !keyOverride.isBlank())   ? keyOverride   : effectiveKey();
         String effectiveModel = (modelOverride != null && !modelOverride.isBlank()) ? modelOverride : resolveModel();
         if (effectiveKey == null || effectiveKey.isBlank()) { log.warn("analyzePageSelectors: no API key"); return null; }
 
@@ -165,7 +172,25 @@ public class OpenRouterService {
         return null;
     }
 
-    public boolean isConfigured() { return apiKey != null && !apiKey.isBlank(); }
+    public boolean isConfigured() { return !effectiveKey().isBlank(); }
+
+    /** OpenRouter key: OPENROUTER_API_KEY / openrouter.api-key, else the admin setting. Never logged. */
+    private String effectiveKey() {
+        String source;
+        String key;
+        if (apiKey != null && !apiKey.isBlank()) { key = apiKey.trim(); source = "environment"; }
+        else {
+            String fromConfig = "";
+            try { fromConfig = appConfig.get("openrouter_api_key", ""); } catch (Exception ignored) {}
+            key = fromConfig == null ? "" : fromConfig.trim();
+            source = key.isEmpty() ? "none" : "admin settings";
+        }
+        if (!source.equals(loggedKeySource)) {
+            loggedKeySource = source;
+            log.info("OpenRouter key source: {}", source);
+        }
+        return key;
+    }
 
     // ── Private ────────────────────────────────────────────────────────────────
 
