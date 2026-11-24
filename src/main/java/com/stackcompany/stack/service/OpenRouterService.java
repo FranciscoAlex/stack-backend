@@ -31,6 +31,57 @@ public class OpenRouterService {
 
     // ── Public API ─────────────────────────────────────────────────────────────
 
+    /**
+     * Rewrites a scraped news article as a complete article in the newsroom's own words (all facts,
+     * figures and quotes kept; nothing added; no sentences copied except quotes). Returns null when
+     * the AI is not configured, fails, or answers with something much shorter than the original,
+     * so the caller can fall back. Format matches the site's article page: headline on line 1,
+     * a standfirst paragraph, the body, then a hashtag line.
+     */
+    public String writeFullArticle(String title, String body) {
+        if (!isConfigured() || body == null || body.isBlank()) return null;
+        String source = body.length() > MAX_SOURCE_CHARS ? body.substring(0, MAX_SOURCE_CHARS) : body;
+        String prompt = """
+            És jornalista económico da redacção da Stake, uma rede de investidores em Angola. Reescreve a notícia abaixo como um artigo completo, nas tuas próprias palavras.
+
+            Regras:
+            - Mantém TODOS os factos, números, datas, nomes, cargos e citações do original. Não acrescentes nada que não esteja no texto.
+            - Citações: mantém-nas entre aspas e atribui-as a quem as disse.
+            - Não copies frases inteiras do original, excepto as citações.
+            - Português de Angola, com a ortografia usada em Angola (acções, projecto, director, sector).
+            - Sem emojis, sem cumprimentos, sem comentários teus.
+
+            Formato (texto simples):
+            Linha 1: o título, sem símbolos no início.
+            Linha em branco.
+            Um parágrafo de entrada com 1 ou 2 frases que resumem a notícia.
+            Linha em branco.
+            O corpo: 4 a 10 parágrafos separados por linhas em branco. Podes usar 1 a 3 subtítulos curtos, cada um sozinho numa linha, entre ** e **.
+            Última linha: 2 ou 3 hashtags (por exemplo #EconomiaAngola #BODIVA).
+
+            Título original: %s
+
+            Texto original:
+            %s
+            """.formatted(title, source);
+        for (int attempt = 1; attempt <= 2; attempt++) {
+            try {
+                String resp = call(prompt, apiKey, model, 2600, 0.4);
+                if (resp == null) continue;
+                String text = resp.trim().replaceAll("(?s)^```(?:\\w+)?\\s*", "").replaceAll("(?s)\\s*```$", "").trim();
+                // A full article: at least 1 200 characters, or half of a short original.
+                int wanted = Math.min(1200, source.length() / 2);
+                if (text.length() >= wanted) return text;
+                log.warn("writeFullArticle: answer too short ({} chars, wanted {}), attempt {}", text.length(), wanted, attempt);
+            } catch (Exception e) {
+                log.error("writeFullArticle failed (attempt {}): {}", attempt, e.getMessage());
+            }
+        }
+        return null;
+    }
+
+    private static final int MAX_SOURCE_CHARS = 14_000;
+
     public String summarizeForPost(String title, String body) {
         if (!isConfigured()) return formatDefault(title, body);
         try {
