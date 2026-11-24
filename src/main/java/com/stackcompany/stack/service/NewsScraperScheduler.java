@@ -140,13 +140,24 @@ public class NewsScraperScheduler {
         }
     }
 
-    @Transactional
-    protected Post createPost(User user, NewsArticle article) {
-        String content = openRouter.summarizeForPost(article.getTitle(), article.getBody());
+    /**
+     * Post text for a scraped article: the full article rewritten by the AI (see
+     * OpenRouterService.writeFullArticle), or the old short excerpt when the AI is unavailable,
+     * plus the configured prefix and "🔗 Fonte: <name> (<url>)" so readers can open the original.
+     */
+    private String postContent(NewsArticle article) {
+        String content = openRouter.writeFullArticle(article.getTitle(), article.getBody());
+        if (content == null) content = openRouter.summarizeForPost(article.getTitle(), article.getBody());
         String prefix  = appConfig.get("bot_post_prefix", "");
         if (prefix != null && !prefix.isBlank()) content = prefix.trim() + "\n\n" + content;
         if (article.getSourceUrl() != null && !article.getSourceUrl().isBlank())
-            content = content + "\n\n🔗 Fonte: " + article.getSourceName();
+            content = content + "\n\n🔗 Fonte: " + article.getSourceName() + " (" + article.getSourceUrl() + ")";
+        return content;
+    }
+
+    @Transactional
+    protected Post createPost(User user, NewsArticle article) {
+        String content = postContent(article);
 
         Post post = Post.builder()
                 .user(user).content(content).votes(0).commentsCount(0)
@@ -157,6 +168,69 @@ public class NewsScraperScheduler {
         postRepository.save(post);
         postRepository.flush();
         return post;
+    }
+
+    // ── Rebuild old short posts in full ───────────────────────────────────────
+    // Until 2026-11 the AI step was told to write 200-400 characters, so news posts were saved as
+    // short summaries (median 454 chars). This job re-reads each original article (scraped_article
+    // keeps the source URL and post id) and replaces the post text with the full article, a few
+    // posts per run so the sources and the AI are not flooded. Votes, comments, views and the
+    // image stay. Posts already long enough, or edited so they no longer end with a "Fonte:" line,
+    // are left alone; it stops by itself once nothing is left. Off with scraper.upgrade-short-posts=false.
+
+    private static final int FULL_POST_CHARS = 1500;
+    private static final int UPGRADES_PER_RUN = 5;
+    private final java.util.Set<Long> upgradeSkipped = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    @org.springframework.beans.factory.annotation.Value("${scraper.upgrade-short-posts:true}")
+    private boolean upgradeShortPosts;
+
+    @Scheduled(initialDelayString = "${scraper.upgrade.initial-delay-ms:120000}", fixedDelayString = "${scraper.upgrade.delay-ms:300000}")
+    public void upgradeShortPosts() {
+        if (!upgradeShortPosts || !openRouter.isConfigured()) return;
+        int done = 0;
+        for (ScrapedArticle sa : scrapedArticleRepository.findTop200ByStatusAndPostIdIsNotNullOrderByIdDesc("POSTED")) {
+            if (done >= UPGRADES_PER_RUN) break;
+            if (sa.getSourceUrl() == null || sa.getSourceUrl().isBlank() || upgradeSkipped.contains(sa.getId())) continue;
+            Optional<Post> found = postRepository.findById(sa.getPostId());
+            if (found.isEmpty()) { upgradeSkipped.add(sa.getId()); continue; }
+            Post post = found.get();
+            String current = post.getContent() == null ? "" : post.getContent();
+            if (current.length() >= FULL_POST_CHARS || !current.contains("Fonte:")) { upgradeSkipped.add(sa.getId()); continue; }
+            try {
+                Optional<NewsArticle> article = rescrape(sa);
+                if (article.isEmpty() || article.get().getBody() == null || article.get().getBody().length() < 400) {
+                    log.info("Upgrade: original unavailable or too short for post {} ({})", post.getId(), sa.getSourceUrl());
+                    upgradeSkipped.add(sa.getId());
+                    continue;
+                }
+                NewsArticle a = article.get();
+                if (a.getSourceName() == null || a.getSourceName().isBlank()) a.setSourceName(sa.getSourceName());
+                if (a.getSourceUrl() == null || a.getSourceUrl().isBlank()) a.setSourceUrl(sa.getSourceUrl());
+                String full = openRouter.writeFullArticle(a.getTitle(), a.getBody());
+                if (full == null) { upgradeSkipped.add(sa.getId()); continue; }
+                String prefix = appConfig.get("bot_post_prefix", "");
+                String content = (prefix != null && !prefix.isBlank() ? prefix.trim() + "\n\n" : "") + full
+                        + "\n\n🔗 Fonte: " + a.getSourceName() + " (" + a.getSourceUrl() + ")";
+                post.setContent(content);
+                if ((post.getImageUrl() == null || post.getImageUrl().isBlank()) && a.getImageUrl() != null && !a.getImageUrl().isBlank())
+                    post.setImageUrl(a.getImageUrl());
+                postRepository.save(post);
+                done++;
+                log.info("Upgrade: post {} rebuilt in full ({} -> {} chars)", post.getId(), current.length(), content.length());
+            } catch (Exception e) {
+                log.warn("Upgrade: post {} failed: {}", post.getId(), e.getMessage());
+                upgradeSkipped.add(sa.getId());
+            }
+        }
+    }
+
+    private Optional<NewsArticle> rescrape(ScrapedArticle sa) {
+        String name = sa.getSourceName() == null ? "" : sa.getSourceName();
+        String lower = name.toLowerCase();
+        if (lower.contains("expans")) return expansaoScraper.scrapeFullArticle(sa.getSourceUrl());
+        if (lower.contains("telegrama")) return telegramaScraper.scrapeFullArticle(sa.getSourceUrl());
+        return newsSourceService.findByName(name).flatMap(src -> genericScraper.scrapeOne(src, sa.getSourceUrl()));
     }
 
     private boolean isAlreadyPosted(String title, String sourceUrl) {

@@ -62,6 +62,18 @@ public class GenericNewsScraperService {
         return results;
     }
 
+    /** Re-reads one article of a configured source (used to rebuild old posts in full). */
+    public java.util.Optional<NewsArticle> scrapeOne(NewsSource source, String url) {
+        try {
+            JsonNode sel = (source.getSelectorsJson() == null || source.getSelectorsJson().isBlank())
+                    ? objectMapper.createObjectNode() : objectMapper.readTree(source.getSelectorsJson());
+            return java.util.Optional.ofNullable(scrapeArticle(source, url, text(sel, "title"), text(sel, "body"), text(sel, "image")));
+        } catch (Exception e) {
+            log.warn("scrapeOne '{}' failed: {}", url, e.getMessage());
+            return java.util.Optional.empty();
+        }
+    }
+
     private NewsArticle scrapeArticle(NewsSource source, String url,
             String titleSel, String bodySel, String imageSel) throws Exception {
         Document doc = Jsoup.connect(url).userAgent(UA).timeout(TIMEOUT_MS).get();

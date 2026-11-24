@@ -71,6 +71,9 @@ public class NewsSourceService {
     public NewsSource getEntityById(Long id) { return findOrThrow(id); }
 
     public List<NewsSource> getEnabledSources() { return repo.findByEnabledTrueOrderByIdAsc(); }
+    public java.util.Optional<NewsSource> findByName(String name) {
+        return repo.findAll().stream().filter(s -> s.getName() != null && s.getName().equalsIgnoreCase(name)).findFirst();
+    }
 
     public NewsSourceDto toDto(NewsSource s) {
         return NewsSourceDto.builder().id(s.getId()).name(s.getName()).baseUrl(s.getBaseUrl())
